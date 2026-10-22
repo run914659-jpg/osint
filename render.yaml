@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: osint-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m osintbot.main
+    healthCheckPath: /health
+    disk:
+      name: bot-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: RUN_MODE
+        value: webhook
+      - key: DB_PATH
+        value: /var/data/bot.db
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: WEBHOOK_PATH
+        value: /webhook
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: PORT
+        value: 10000
