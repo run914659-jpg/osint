@@ -9,7 +9,7 @@ after writes. The DDL matches PLAN.md section 3 exactly, including the
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
@@ -26,6 +26,7 @@ __all__ = [
     "set_invite_url",
     "is_verified",
     "set_verified",
+    "clear_verification",
     "clear_verifications",
     "get_pending_channels",
     "get_setting",
@@ -64,6 +65,13 @@ _CHANNEL_COLS = (
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+# Cached verifications older than this re-enter the force-join gate, so a
+# user who joined → verified → left cannot bypass forever without ever
+# tapping Verify again (REVIEW H2 residual). Lexicographic comparison is
+# safe: verified_at and the cutoff share _now()'s ISO-8601 UTC format.
+VERIFICATION_TTL_HOURS = 6
 
 
 async def get_conn(path: str) -> aiosqlite.Connection:
@@ -194,6 +202,21 @@ async def set_verified(conn: aiosqlite.Connection, user_id: int, chat_id: int) -
     await conn.commit()
 
 
+async def clear_verification(
+    conn: aiosqlite.Connection, user_id: int, chat_id: int
+) -> None:
+    """Revoke ONE cached verification (e.g. the user left that channel).
+
+    Used by the verify flow to invalidate stale rows: a cached "joined"
+    must never outlive the actual membership (REVIEW H2).
+    """
+    await conn.execute(
+        "DELETE FROM user_channels WHERE user_id = ? AND chat_id = ?",
+        (user_id, chat_id),
+    )
+    await conn.commit()
+
+
 async def clear_verifications(conn: aiosqlite.Connection, user_id: int) -> None:
     await conn.execute("DELETE FROM user_channels WHERE user_id = ?", (user_id,))
     await conn.commit()
@@ -202,17 +225,25 @@ async def clear_verifications(conn: aiosqlite.Connection, user_id: int) -> None:
 async def get_pending_channels(
     conn: aiosqlite.Connection, user_id: int
 ) -> list[dict]:
-    """Channels this user has NOT been verified in yet (force-join gate)."""
+    """Channels this user has NOT been verified in yet (force-join gate).
+
+    Verifications expire after ``VERIFICATION_TTL_HOURS`` — a stale cache
+    re-gates the user, who then runs the full re-check in the verify flow.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=VERIFICATION_TTL_HOURS)
+    ).isoformat(timespec="microseconds")
     cur = await conn.execute(
         """
         SELECT c.* FROM channels c
         WHERE NOT EXISTS (
             SELECT 1 FROM user_channels uc
             WHERE uc.chat_id = c.chat_id AND uc.user_id = ?
+              AND uc.verified_at >= ?
         )
         ORDER BY c.created_at ASC, c.rowid ASC
         """,
-        (user_id,),
+        (user_id, cutoff),
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]

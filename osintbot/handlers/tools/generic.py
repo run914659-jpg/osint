@@ -17,6 +17,9 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
+from contextlib import suppress
+from html.parser import HTMLParser
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -54,6 +57,7 @@ __all__ = [
     "build_error_text",
     "build_timeout_text",
     "build_error_kb",
+    "_cap_message",
 ]
 
 logger = logging.getLogger("osintbot.tools")
@@ -68,6 +72,15 @@ _MAX_COPY_CHARS = 256
 
 # Fallback alert length for pre-copy_text aiogram builds (alert cap ≈ 200).
 _ALERT_CHARS = 190
+
+# M1: Telegram rejects messages over 4096 chars — cap before send/edit.
+_MAX_MESSAGE_CHARS = 4000
+_TRUNCATION_NOTE = "\n\n<i>… truncated — output too long</i>"
+
+# L1: ToolError messages may carry leftover Telegram-style markup; strip the
+# known tags BEFORE escaping so the card renders as the author intended
+# (escaping afterwards keeps arbitrary user/API data safe).
+_MARKUP_TAG_RE = re.compile(r"</?(?:code|i|b|u|s|blockquote|span[^>]*)>")
 
 
 class ToolFlow(StatesGroup):
@@ -174,10 +187,15 @@ def build_result_kb(
 
 
 def build_error_text(title: str, err: object) -> str:
-    """Danger error card — escaped message + a concrete tip."""
+    """Danger error card — escaped message + a concrete tip.
+
+    Known Telegram markup tags in the raw error are stripped first (L1) so
+    ``<code>`` etc. don't show up double-escaped; everything else is escaped.
+    """
+    msg = _MARKUP_TAG_RE.sub("", str(err))
     return (
         f"⚠️ <b>{html.escape(title)}</b>\n"
-        f"\n<blockquote>{html.escape(str(err))}</blockquote>\n"
+        f"\n<blockquote>{html.escape(msg)}</blockquote>\n"
         "<i>Tip: check the input format and try again.</i>"
     )
 
@@ -208,13 +226,60 @@ def build_error_kb(code: str, title: str, err: object) -> InlineKeyboardMarkup:
 # ---------------------------------------------------------------- helpers ----
 
 
+class _OpenTagTracker(HTMLParser):
+    """Track which Telegram-HTML tags are still open at a cut point."""
+
+    _VOIDISH = frozenset({"br", "img", "hr"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.stack: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # noqa: ANN001
+        if tag not in self._VOIDISH:
+            self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.stack:
+            while self.stack:
+                if self.stack.pop() == tag:
+                    break
+
+
+def _cap_message(text: str) -> str:
+    """Cap a final message under Telegram's 4096-char limit (M1).
+
+    Truncation must never cut a tag in half or leave tags open (Telegram
+    would reject the whole message), so a partial trailing tag is dropped
+    and still-open tags are closed before the truncation notice is appended.
+    """
+    if len(text) <= _MAX_MESSAGE_CHARS:
+        return text
+    cut = text[:_MAX_MESSAGE_CHARS]
+    # Never end mid-tag: drop a trailing "<..." fragment without ">".
+    if "<" in cut.rsplit(">", 1)[-1]:
+        cut = cut[: cut.rfind("<")]
+    # Never end mid-entity either: "&amp" (no ";") at the cut point.
+    tail = cut.rsplit("&", 1)[-1]
+    if tail and ";" not in tail and len(tail) < 10:
+        cut = cut[: cut.rfind("&")]
+    tracker = _OpenTagTracker()
+    with suppress(Exception):  # malformed HTML → send the cap anyway
+        tracker.feed(cut)
+        tracker.close()
+    closing = "".join(f"</{tag}>" for tag in reversed(tracker.stack))
+    return cut + closing + _TRUNCATION_NOTE
+
+
 async def _edit_or_new(bot, chat_id: int, message_id: int | None, text: str, kb) -> None:
     """Edit the loading/result message; fresh send when it's gone.
 
     ``message is not modified`` is swallowed silently (PLAN §6), a deleted
     message falls through to a new send, and a dead chat never raises out
-    of the tool flow.
+    of the tool flow. Every final text is capped at the Telegram length
+    limit first (M1) — a >4096-char render must never freeze the loader.
     """
+    text = _cap_message(text)
     if message_id is not None:
         try:
             await bot.edit_message_text(
@@ -233,8 +298,11 @@ async def _edit_or_new(bot, chat_id: int, message_id: int | None, text: str, kb)
         # e.g. "message to edit not found" → send a fresh one below.
     try:
         await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
-    except Exception:  # noqa: BLE001 - user blocked us / stale chat
+    except Exception:  # noqa: BLE001 - user blocked us / invalid HTML from a render
         logger.warning("tool reply failed in chat %s", chat_id, exc_info=True)
+        # Re-raise so the caller's plain-text fallback (generic.py) can fire
+        # instead of leaving the user on a frozen loader (REVIEW M1 residual).
+        raise
 
 
 # --------------------------------------------------------------- handlers ----
@@ -312,13 +380,25 @@ async def handle_tool_query(
         )
     except Exception as exc:  # noqa: BLE001 - ToolError/ToolTimeout/anything
         logger.warning("tool %s lookup failed: %s", code, exc, exc_info=True)
-        await _edit_or_new(
-            bot,
-            chat_id,
-            loading_id,
-            build_error_text(title, exc),
-            build_error_kb(code, title, str(exc)),
-        )
+        try:
+            await _edit_or_new(
+                bot,
+                chat_id,
+                loading_id,
+                build_error_text(title, exc),
+                build_error_kb(code, title, str(exc)),
+            )
+        except Exception:  # noqa: BLE001 - M1: never stay silent/stuck here
+            logger.exception("tool %s error card failed; plain fallback", code)
+            try:
+                # Short plain-text (no parse_mode) card — cannot fail to parse.
+                await bot.send_message(
+                    chat_id,
+                    f"⚠️ {title}: lookup failed — please try again.",
+                    reply_markup=build_error_kb(code, title, ""),
+                )
+            except Exception:  # noqa: BLE001 - user blocked us; nothing left
+                logger.warning("tool %s fallback reply failed in chat %s", code, chat_id)
     finally:
         if loader is not None:
             await loader.stop()

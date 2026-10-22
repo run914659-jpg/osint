@@ -7,6 +7,12 @@ in a worker thread for ``getexif()`` parsing.
 Reported tags: DateTime, Make, Model, Software, Artist, XPTitle/XPAuthor and
 GPS *presence* only — this tool deliberately never claims coordinates it
 would have to guess at.
+
+Known limitation — DNS-rebinding TOCTOU (REVIEW M4): downloads go through
+``osint.urlinfo._assert_public_host``, which resolves-then-fetches. A
+DNS-rebinding attacker can flip the resolution between the check and the
+connection. Documented follow-up: pin the checked IP into the connection
+(custom aiohttp resolver) instead of resolving twice.
 """
 
 from __future__ import annotations

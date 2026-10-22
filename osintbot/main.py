@@ -95,9 +95,13 @@ def create_web_app(
             return web.Response(status=400, text="invalid update")
         try:
             await dp.feed_update(bot, update)
-        except Exception:  # noqa: BLE001 - report failure to Telegram
-            logger.exception("Error while processing webhook update")
-            return web.Response(status=500, text="internal error")
+        except Exception:  # noqa: BLE001 - update already accepted & validated:
+            # log and still return 200 (L6) — a 500 would make Telegram retry
+            # the update and duplicate every side effect (messages, DB writes).
+            logger.exception(
+                "Error while processing webhook update — returning 200 to "
+                "avoid Telegram retry duplicates"
+            )
         return web.Response(status=200)
 
     async def not_found(request: web.Request) -> web.Response:

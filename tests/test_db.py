@@ -148,6 +148,26 @@ async def test_verified_flow(conn):
     assert len(await db.get_pending_channels(conn, 5)) == 2
 
 
+async def test_clear_verification_revokes_single_row(conn):
+    """REVIEW H2: verify → leave → verify must not keep a stale bypass."""
+    await db.add_channel(conn, chat_id=-4001, title="One", join_mode="direct")
+    await db.add_channel(conn, chat_id=-4002, title="Two", join_mode="direct")
+    await db.set_verified(conn, 5, -4001)
+    await db.set_verified(conn, 5, -4002)
+    assert await db.get_pending_channels(conn, 5) == []
+
+    # the user left channel One → revoke only that row
+    await db.clear_verification(conn, 5, -4001)
+    assert not await db.is_verified(conn, 5, -4001)
+    assert await db.is_verified(conn, 5, -4002)  # other rows untouched
+    pending = await db.get_pending_channels(conn, 5)
+    assert [c["chat_id"] for c in pending] == [-4001]
+
+    # revoking for a user who has no rows is a harmless no-op
+    await db.clear_verification(conn, 6, -4001)
+    assert len(await db.get_pending_channels(conn, 6)) == 2
+
+
 async def test_settings_round_trip(conn):
     assert await db.get_setting(conn, "missing") is None
     assert await db.get_setting(conn, "missing", "fallback") == "fallback"
@@ -157,3 +177,28 @@ async def test_settings_round_trip(conn):
 
     await db.set_setting(conn, "loader_enabled", "0")
     assert await db.get_setting(conn, "loader_enabled") == "0"
+
+
+# --------------------------------------------- verification TTL (H2 fix) ---
+
+
+async def test_stale_verification_expires_back_into_gate(conn):
+    await db.add_channel(
+        conn, chat_id=-1001, username="chan", title="Chan",
+        type="channel", join_mode="direct", created_by=1,
+    )
+    await db.set_verified(conn, 42, -1001)
+    assert await db.get_pending_channels(conn, 42) == []  # fresh cache → gate passes
+
+    # Backdate the cache beyond VERIFICATION_TTL_HOURS → gate must re-check.
+    await conn.execute(
+        "UPDATE user_channels SET verified_at='2000-01-01T00:00:00.000000+00:00' "
+        "WHERE user_id=42 AND chat_id=-1001"
+    )
+    await conn.commit()
+    pending = await db.get_pending_channels(conn, 42)
+    assert [c["chat_id"] for c in pending] == [-1001]
+
+    # Re-verifying refreshes the cache → gate passes again.
+    await db.set_verified(conn, 42, -1001)
+    assert await db.get_pending_channels(conn, 42) == []

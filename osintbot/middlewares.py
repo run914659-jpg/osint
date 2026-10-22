@@ -92,11 +92,22 @@ class ForceJoinGateMiddleware(BaseMiddleware):
     On a gated message/callback the force-join screen is shown and the
     handler chain is cancelled (see module docstring for why we do not raise
     ``CancelHandler``). Whitelisted: ``/start`` text, callbacks starting
-    with ``vj:``, ``ch:`` or ``back:``.
+    with ``vj:``, ``ch:`` or ``back:``. Private chats only (REVIEW M3) —
+    in group/supergroup/channel chats the gate stays completely silent
+    (sends nothing at all) and lets updates flow through.
     """
 
     def __init__(self, admin_ids: set[int]) -> None:
         self.admin_ids = set(admin_ids)
+
+    @staticmethod
+    def _is_non_private(event: TelegramObject) -> bool:
+        """True when the event's chat is provably NOT a private chat."""
+        chat = getattr(event, "chat", None)  # Message always exposes .chat
+        if chat is None and isinstance(event, CallbackQuery):
+            msg = event.message
+            chat = getattr(msg, "chat", None) if msg is not None else None
+        return chat is not None and getattr(chat, "type", None) != "private"
 
     @staticmethod
     def _is_whitelisted(event: TelegramObject) -> bool:
@@ -109,6 +120,10 @@ class ForceJoinGateMiddleware(BaseMiddleware):
         return False
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict) -> Any:
+        if self._is_non_private(event):
+            # M3: never gate (or message) groups/supergroups/channels.
+            return await handler(event, data)
+
         user = getattr(event, "from_user", None)
         if user is None or user.id in self.admin_ids or self._is_whitelisted(event):
             return await handler(event, data)

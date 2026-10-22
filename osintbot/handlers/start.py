@@ -10,8 +10,13 @@ a later wave (WAVE3) adds ``handlers/tools/``.
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+)
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -22,6 +27,7 @@ from aiogram.types import (
 
 from osintbot import texts, toolspec
 from osintbot.db import (
+    clear_verification,
     get_pending_channels,
     get_setting,
     list_channels,
@@ -168,14 +174,22 @@ async def _show_welcome_or_gate(event: TelegramObject, conn, config) -> None:
 
 # ------------------------------------------------------------- handlers -----
 
-@router.message(Command("start"))
+@router.message(Command("start"), F.chat.type == "private")
 async def cmd_start(message: Message, db, config) -> None:
-    """``db`` is the shared aiosqlite conn (DbMiddleware), ``config`` the Config."""
+    """``db`` is the shared aiosqlite conn (DbMiddleware), ``config`` the Config.
+
+    Private chats only (REVIEW M3) — the bot must stay silent in groups.
+    """
     await _show_welcome_or_gate(message, db, config)
 
 
 @router.callback_query(F.data == "back:menu")
-async def cb_back_menu(callback: CallbackQuery, bot, db, config) -> None:
+async def cb_back_menu(
+    callback: CallbackQuery, bot, db, config, state: FSMContext
+) -> None:
+    # M8: leaving a tool prompt via Back must not keep the FSM armed,
+    # otherwise the next unrelated text would be eaten as a tool query.
+    await state.clear()
     await _show_welcome_or_gate(callback, db, config)
     await callback.answer()
 
@@ -183,20 +197,26 @@ async def cb_back_menu(callback: CallbackQuery, bot, db, config) -> None:
 @router.callback_query(F.data == "vj:check")
 async def cb_verify(callback: CallbackQuery, bot, db, config) -> None:
     user_id = callback.from_user.id
-    pending = await get_pending_channels(db, user_id)
+    # H2: re-check EVERY must-join channel (all saved channels gate), not
+    # just the pending ones — a cached "joined" must be revoked when the
+    # user has actually left (join → verify → leave → permanent bypass).
+    channels = await list_channels(db)
 
     still: list[dict] = []
     unverifiable: list[dict] = []
-    for ch in pending:
+    for ch in channels:
         try:
             member = await bot.get_chat_member(ch["chat_id"], user_id)
-            if is_joined(member):
-                await set_verified(db, user_id, ch["chat_id"])
-            else:
-                still.append(ch)
-        except (TelegramBadRequest, TelegramForbiddenError):
-            # Bot lost admin rights / chat inaccessible → cannot verify.
+        except TelegramAPIError:
+            # M2: catch the base class — any Telegram API failure (bad
+            # request, forbidden, not found, flood) means "can't verify".
             unverifiable.append(ch)
+            continue
+        if is_joined(member):
+            await set_verified(db, user_id, ch["chat_id"])
+        else:
+            await clear_verification(db, user_id, ch["chat_id"])
+            still.append(ch)
 
     fails = 0
     if unverifiable:
@@ -215,6 +235,11 @@ async def cb_verify(callback: CallbackQuery, bot, db, config) -> None:
 
     # All joined (or grace exhausted on unverifiable channels).
     if unverifiable:
+        # H1 + L5: persist the bypass for the unverifiable channels and
+        # reset the fail counter — otherwise the user is hard-locked forever.
+        for ch in unverifiable:
+            await set_verified(db, user_id, ch["chat_id"])
+        await set_setting(db, _VERIFY_FAILS_KEY.format(user_id=user_id), "0")
         await callback.answer(
             f"⚠️ {len(unverifiable)} channel(s) can't be checked — proceeding anyway",
             show_alert=True,

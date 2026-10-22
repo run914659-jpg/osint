@@ -1,5 +1,6 @@
 """Layout rules D1–D6 — the Phase 2 gate (PLAN.md §5)."""
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -178,3 +179,22 @@ def test_url_button_and_disabled_button_build():
     link = btn("Join", url="https://t.me/+invite", style=PRIMARY)
     assert link.url == "https://t.me/+invite"
     assert getattr(link, "style", None) == PRIMARY
+
+
+# (f) danger-lint (L4): non-destructive danger uses are exempt, deletes warn --
+
+def test_danger_lint_allows_retry_and_noop_buttons():
+    # t:-retry (error card) and the inert noop note are documented
+    # non-destructive uses of danger — they must NOT warn.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        retry = btn("🔄 Try Again", cb="t:ip", style=DANGER)
+        note = btn("⏱ Data may be partial", cb="noop", style=DANGER)
+    assert getattr(retry, "style", None) == DANGER
+    assert getattr(note, "style", None) == DANGER
+
+
+def test_danger_lint_still_warns_on_genuine_delete_buttons():
+    # the lint must not be silenced for real destructive callbacks
+    with pytest.warns(UserWarning, match="danger"):
+        btn("🗑 Nuke", cb="adm:purge:1", style=DANGER)

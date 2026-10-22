@@ -6,6 +6,15 @@ resolved address must be public, otherwise the lookup is refused with a
 clear ToolError. Body reads are capped at 512 KB and the ``<title>`` is
 pulled out with a regex run in a worker thread.
 
+Known limitation — DNS-rebinding TOCTOU (REVIEW M4): the guard uses a
+resolve-then-fetch pattern (``_assert_public_host`` resolves the name, then
+aiohttp resolves it *again* when connecting). A DNS-rebinding attacker can
+answer the guard's resolution with a public address and the later connection
+with a private one. Re-running the guard on every redirect hop narrows but
+does not close this window. Documented follow-up: pin the resolved address
+into the connection (custom resolver / ``aiohttp.abc.AbstractResolver``
+returning the checked IP) instead of resolving twice.
+
 Public helpers re-exported for sibling modules:
 
 * :func:`_assert_public_host` — async SSRF guard (used by ``exiftool``)

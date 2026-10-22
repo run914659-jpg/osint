@@ -57,6 +57,10 @@ MAX_CB_BYTES = 64
 # lint-style validation). Non-fatal — a warning, so late-phase result
 # footers cannot hard-crash the bot.
 _DANGER_PREFIXES = ("adm:del", "adm:dely", "adm:deln", "cancel")
+# L4: two documented NON-destructive uses of danger are exempt from the
+# warning: the retry button on an error card (``t:<code>`` — generic.py)
+# and the inert ``noop`` partial-result note. Genuine deletes still warn.
+_DANGER_EXEMPT_PREFIXES = ("t:", "noop")
 
 
 def cb(prefix: str, *args) -> str:
@@ -144,7 +148,12 @@ def btn(
             f"btn(): callback_data {size} bytes > {MAX_CB_BYTES}: {cb!r}"
         )
 
-    if style == DANGER and cb is not None and not cb.startswith(_DANGER_PREFIXES):
+    if (
+        style == DANGER
+        and cb is not None
+        and not cb.startswith(_DANGER_PREFIXES)
+        and not cb.startswith(_DANGER_EXEMPT_PREFIXES)
+    ):
         warnings.warn(
             f"btn(): style='danger' on non-destructive callback {cb!r} "
             "(danger is meant for delete/cancel)",

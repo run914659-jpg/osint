@@ -16,7 +16,11 @@ import html
 import re
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
@@ -189,6 +193,16 @@ def _mode_choice_kb(chat_id: int) -> InlineKeyboardMarkup:
 
 # --------------------------------------------------------------- helpers ----
 
+# Callback answers are capped at 200 chars by Telegram (M9) — long channel
+# titles must never exceed that, or the whole answer is rejected.
+_ALERT_CAP = 190
+
+
+def _alert(text: str) -> str:
+    """Truncate a callback-alert text to Telegram's ~200-char cap."""
+    return text[:_ALERT_CAP]
+
+
 def _esc(value: object) -> str:
     return html.escape(str(value), quote=False)
 
@@ -253,7 +267,7 @@ async def _show_list(callback: Callback, conn) -> None:
 async def _bot_is_admin(bot, chat_id: int) -> bool:
     try:
         admins = await bot.get_chat_administrators(chat_id)
-    except (TelegramBadRequest, TelegramForbiddenError):
+    except TelegramAPIError:  # M2: base class covers bad request/forbidden/etc.
         return False
     return bot.id in {m.user.id for m in admins if m.user}
 
@@ -382,7 +396,7 @@ async def cb_admin_del(callback: CallbackQuery, db) -> None:
     ch = await get_channel(db, chat_id)
     if ch is None:
         await edit_or_send(callback, texts.ADMIN_NOT_FOUND, _back_admin_kb())
-        await callback.answer("Channel not found", show_alert=True)
+        await callback.answer(_alert("Channel not found"), show_alert=True)
         return
     title = _esc(ch.get("title") or ch.get("username") or chat_id)
     await edit_or_send(
@@ -397,10 +411,13 @@ async def cb_admin_del(callback: CallbackQuery, db) -> None:
 async def cb_admin_del_yes(callback: CallbackQuery, db) -> None:
     chat_id = int(callback.data.split(":")[2])
     ch = await get_channel(db, chat_id)
-    title = _esc((ch or {}).get("title") or (ch or {}).get("username") or chat_id)
+    raw_title = str((ch or {}).get("title") or (ch or {}).get("username") or chat_id)
     await delete_channel(db, chat_id)  # also drops cached verifications
     await _show_list(callback, db)
-    await callback.answer(texts.ADMIN_DELETED.format(title=title), show_alert=True)
+    # L3: alerts are plain text — use the no-HTML variant + M9 truncation.
+    await callback.answer(
+        _alert(texts.ADMIN_DELETED_ALERT.format(title=raw_title)), show_alert=True
+    )
 
 
 @router.callback_query(F.data.startswith("adm:deln:"))
@@ -416,10 +433,12 @@ async def cb_admin_mode(callback: CallbackQuery, db) -> None:
     ch = await get_channel(db, chat_id)
     if ch is None:
         await edit_or_send(callback, texts.ADMIN_NOT_FOUND, _back_admin_kb())
-        await callback.answer("Channel not found", show_alert=True)
+        await callback.answer(_alert("Channel not found"), show_alert=True)
         return
     if ch.get("username"):  # public → always direct
-        await callback.answer("Public channel — direct join only", show_alert=True)
+        await callback.answer(
+            _alert("Public channel — direct join only"), show_alert=True
+        )
         return
     title = _esc(ch.get("title") or ch.get("username") or chat_id)
     await edit_or_send(
@@ -436,7 +455,7 @@ async def cb_admin_mode_set(callback: CallbackQuery, state: FSMContext, bot, db)
     _, _, chat_id_s, mode = callback.data.split(":", 3)
     chat_id = int(chat_id_s)
     if mode not in ("request", "direct_private"):
-        await callback.answer("Unknown mode", show_alert=True)
+        await callback.answer(_alert("Unknown mode"), show_alert=True)
         return
 
     ch = await get_channel(db, chat_id)
@@ -448,9 +467,8 @@ async def cb_admin_mode_set(callback: CallbackQuery, state: FSMContext, bot, db)
         chat = None
     if ch is None and chat is None:
         await edit_or_send(callback, texts.ADMIN_NOT_FOUND, _back_admin_kb())
-        await callback.answer("Channel not found", show_alert=True)
+        await callback.answer(_alert("Channel not found"), show_alert=True)
         return
-    title = _esc(raw_title)
 
     if mode == "request":
         try:
@@ -459,7 +477,7 @@ async def cb_admin_mode_set(callback: CallbackQuery, state: FSMContext, bot, db)
             )
         except (TelegramBadRequest, TelegramForbiddenError):
             await callback.answer(
-                "⚠️ Can't create a request invite — check bot admin rights",
+                _alert("⚠️ Can't create a request invite — check bot admin rights"),
                 show_alert=True,
             )
             return
@@ -469,7 +487,7 @@ async def cb_admin_mode_set(callback: CallbackQuery, state: FSMContext, bot, db)
             invite = await bot.export_chat_invite_link(chat_id)
         except (TelegramBadRequest, TelegramForbiddenError):
             await callback.answer(
-                "⚠️ Missing right: invite users via link", show_alert=True
+                _alert("⚠️ Missing right: invite users via link"), show_alert=True
             )
             return
 
@@ -488,6 +506,13 @@ async def cb_admin_mode_set(callback: CallbackQuery, state: FSMContext, bot, db)
     await state.clear()
 
     await _show_detail(callback, bot, db, chat_id)
-    # Callback answers are capped at 200 chars by Telegram — truncate the toast.
-    toast = texts.ADMIN_MODE_SET.format(title=title, mode=mode, invite=_esc(invite))
-    await callback.answer(toast[:190], show_alert=False)
+    # L3: plain-text (no-HTML) alert variant + M9 truncation at source.
+    # Callback answers are capped at 200 chars by Telegram.
+    await callback.answer(
+        _alert(
+            texts.ADMIN_MODE_SET_ALERT.format(
+                title=raw_title, mode=mode, invite=invite
+            )
+        ),
+        show_alert=False,
+    )

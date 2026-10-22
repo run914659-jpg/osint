@@ -51,8 +51,9 @@ from osintbot.keyboards import (
     btn,
 )
 
-# The keyboards danger-lint warns on Try Again / partial footers *by design*
-# (documented non-fatal in keyboards.py) — keep it out of the test summary.
+# The keyboards danger-lint no longer warns on Try Again / partial footers
+# (L4 exempted them); the filter stays as belt-and-braces against any
+# third-party UserWarning drowning the test summary.
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 
 ALLOWED_STYLES = {None, PRIMARY, SUCCESS, DANGER}
@@ -621,3 +622,48 @@ async def test_noop_and_copy_fallback_callbacks_answer():
     copy = _StubCallback("qcopy:john@example.com")
     await generic.cb_copy_query(copy)  # type: ignore[arg-type]
     assert copy.answers == [("john@example.com", True)]
+
+
+# ------------------------------------------- cap/strip regressions (M1/L1) ---
+
+
+def test_cap_message_closes_open_tags_and_stays_under_limit():
+    body = "<blockquote><b><i>" + ("data &amp; more " * 500) + "</i></b></blockquote>"
+    assert len(body) > 6000
+    out = generic._cap_message(body)
+    assert len(out) < 4096
+    assert "truncated" in out.lower()
+    # every opened tag must be closed, in reverse order, before the note
+    for tag in ("</i>", "</b>", "</blockquote>"):
+        assert out.index(tag) < out.index("truncated")
+    # no half tag at the cut point
+    assert "<" not in out.rsplit(">", 1)[-1].replace("truncated — output too long", "")
+
+
+def test_cap_message_drops_trailing_tag_fragment():
+    # total > cap so the cut lands INSIDE the trailing "<br>" fragment
+    filler = "x" * (generic._MAX_MESSAGE_CHARS - 2)
+    out = generic._cap_message(filler + "<br>")
+    assert len(filler + "<br>") > generic._MAX_MESSAGE_CHARS
+    # the half-open "<b" fragment must be gone entirely (note's own <i> is fine)
+    assert "<b" not in out
+    assert "truncated" in out.lower()
+
+
+def test_cap_message_drops_trailing_incomplete_entity():
+    # total > cap so the cut lands INSIDE the trailing "&amp" entity
+    filler = "y" * (generic._MAX_MESSAGE_CHARS - 2)
+    out = generic._cap_message(filler + "&amp")
+    pre_note = out.split("truncated")[0]
+    # no dangling "&am"/"&amp" survives the cut — ends on plain text
+    assert "&" not in pre_note[-10:]
+    assert "truncated" in out.lower()
+
+
+def test_error_text_strips_known_markup_before_escaping():
+    text = build_error_text("IP → Info", ToolError('invalid host <code>ex.com</code> & <b>more</b>'))
+    assert "ex.com" in text
+    assert "&lt;code&gt;" not in text
+    assert "&lt;b&gt;" not in text
+    # unknown/user angle brackets are still escaped (no HTML injection)
+    assert "&lt;input&gt;" in build_error_text("T", ToolError("bad <input>")).replace("&amp;lt;", "&lt;")

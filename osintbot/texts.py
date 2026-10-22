@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import html as _html
 
+from osintbot.toolspec import TOOLS as _TOOLS  # single source for the count (L2)
+
+_TOOL_COUNT = len(_TOOLS)
+
 __all__ = [
     "WELCOME",
     "ADMIN_MENU",
@@ -19,6 +23,8 @@ __all__ = [
     "ADMIN_LIST_EMPTY",
     "ADMIN_DELETE_CONFIRM",
     "ADMIN_DELETED",
+    "ADMIN_DELETED_ALERT",
+    "ADMIN_MODE_SET_ALERT",
     "FORCE_JOIN",
     "FORCE_JOIN_OK",
     "JOIN_REQUEST_APPROVED",
@@ -55,7 +61,7 @@ WELCOME = (
     " |____/\\___/|_|   /_/\\_\\  |_|   |_| |_| \\_|_____| |_|  \n"
     "</pre>"
     "\n"
-    "<blockquote>🕵️ <b>The premium OSINT toolkit</b> — 8 instant tools, "
+    f"<blockquote>🕵️ <b>The premium OSINT toolkit</b> — {_TOOL_COUNT} instant tools, "
     "zero noise, all inside Telegram.</blockquote>"
     "\n\n"
     "🔎 <b>What you can do here</b>\n"
@@ -142,6 +148,11 @@ ADMIN_DELETED = (
     "🗑 <b>Deleted</b> — <i>{title}</i> is no longer gating the bot."
 )
 
+# L3: plain-text (NO HTML) variants for callback.answer alerts — Telegram
+# alerts render plain text and would show raw tags.
+ADMIN_DELETED_ALERT = "🗑 Deleted — {title} is no longer gating the bot."
+ADMIN_MODE_SET_ALERT = "✅ Join mode updated — {title}: {mode}. Invite: {invite}"
+
 # ----------------------------------------------------------- force-join ----
 
 def FORCE_JOIN(pending: list[dict]) -> str:
@@ -179,7 +190,7 @@ MAIN_MENU = (
     "🗂 <b>Main Menu</b>\n"
     "<blockquote>Choose a tool — results arrive in seconds.</blockquote>"
     "\n\n"
-    "8 tools available. Type your query when prompted."
+    f"{_TOOL_COUNT} tools available. Type your query when prompted."
 )
 
 

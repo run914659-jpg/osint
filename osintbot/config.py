@@ -76,6 +76,17 @@ class Config:
         webhook_path = (os.getenv("WEBHOOK_PATH") or "/webhook").strip() or "/webhook"
         webhook_secret = (os.getenv("WEBHOOK_SECRET") or "").strip() or "change-me"
         public_base_url = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+
+        # H3: never let a webhook deployment boot with a guessable secret —
+        # anyone could forge updates and impersonate admins.
+        if run_mode == "webhook" and (
+            webhook_secret in ("change-me", "") or len(webhook_secret) < 32
+        ):
+            raise SystemExit(
+                "WEBHOOK_SECRET must be a random value of >=32 chars when "
+                'RUN_MODE=webhook (generate: python -c "import '
+                'secrets;print(secrets.token_urlsafe(48))")'
+            )
         db_path = (os.getenv("DB_PATH") or "").strip() or "./bot.db"
 
         raw_port = (os.getenv("PORT") or "").strip()

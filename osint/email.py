@@ -13,15 +13,18 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import re
 import socket
 import urllib.error
 import urllib.request
+from html import escape
 
 import dns.exception
 import dns.resolver
 
 from osint import ToolError
+from osint.urlinfo import _ip_blocked  # shared SSRF classifier (M5)
 
 __all__ = ["lookup", "render", "is_valid", "is_disposable", "gravatar_hash"]
 
@@ -121,10 +124,43 @@ def _gravatar_exists(avatar_hash: str) -> bool | None:
         return None
 
 
-def _smtp_reachable(host: str) -> bool:
-    """Plain TCP connect to port 25 — success means the server answers."""
+def _public_mx_address(host: str) -> str | None:
+    """Resolve the MX host and return a PUBLIC address, else ``None``.
+
+    Every resolved address is classified with the shared SSRF guard
+    (``urlinfo._ip_blocked``): private/loopback/link-local/reserved/
+    multicast/unspecified addresses (incl. IPv4-mapped IPv6) refuse the
+    whole host — an attacker-controlled MX record must never become an
+    internal port-25 probing oracle (REVIEW M5).
+    """
     try:
-        with socket.create_connection((host, 25), timeout=3):
+        infos = socket.getaddrinfo(host, 25, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return None
+    addrs = sorted({str(info[4][0]).split("%")[0] for info in infos})
+    public: str | None = None
+    for addr in addrs:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if _ip_blocked(ip):
+            return None  # refuse the host entirely
+        if public is None:
+            public = str(ip)
+    return public
+
+
+def _smtp_reachable(host: str) -> bool:
+    """Plain TCP connect to port 25 of a PUBLIC MX address — success = answers.
+
+    Only connects when the MX host resolves to a public address (M5).
+    """
+    addr = _public_mx_address(host)
+    if addr is None:
+        return False
+    try:
+        with socket.create_connection((addr, 25), timeout=3):
             return True
     except OSError:
         return False
