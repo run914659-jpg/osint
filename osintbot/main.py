@@ -54,7 +54,7 @@ def create_dispatcher(cfg: Config, bot: Bot, conn) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage(), config=cfg)
 
     db_mw = DbMiddleware(conn)
-    upsert_mw = UserUpsertMiddleware()
+    upsert_mw = UserUpsertMiddleware(cfg.admin_ids)
     gate_mw = ForceJoinGateMiddleware(cfg.admin_ids)
     for observer in (dp.message, dp.callback_query):
         observer.middleware(db_mw)

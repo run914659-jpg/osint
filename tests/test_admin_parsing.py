@@ -125,35 +125,35 @@ def _channels(n: int) -> list[dict]:
 
 
 def test_menu_kb_layout_rules():
-    kb = build_menu_kb(_channels(3), is_admin=True)
+    kb = build_menu_kb(is_admin=True)
     rows = kb.inline_keyboard
-    # last row: single Back button
+    # root menu has no Back, no Verify, no channel buttons (L8)
+    cbs = {b.callback_data for r in rows for b in r}
+    assert "back:menu" not in cbs
+    assert "vj:check" not in cbs
+    assert not any(b.url for r in rows for b in r)
+    # admin row is last, full width
     assert len(rows[-1]) == 1
-    assert rows[-1][0].callback_data == "back:menu"
-    # admin row directly above Back, full width
-    assert len(rows[-2]) == 1
-    assert rows[-2][0].callback_data == "adm:menu"
-    # verify row is full-width with exactly vj:check
-    verify_rows = [r for r in rows if len(r) == 1 and r[0].callback_data == "vj:check"]
-    assert len(verify_rows) == 1
+    assert rows[-1][0].callback_data == "adm:menu"
     # all 16 tools present, 2-up
-    tool_cbs = {
-        b.callback_data for r in rows for b in r if b.callback_data and b.callback_data.startswith("t:")
-    }
+    tool_cbs = {cb for cb in cbs if cb and cb.startswith("t:")}
     assert len(tool_cbs) == 16
-    # every callback fits Telegram's limit
+    # every callback fits Telegram's limit; feature rows ≤ 2 buttons
     for r in rows:
+        assert 1 <= len(r) <= 2
         for b in r:
             if b.callback_data:
                 assert len(b.callback_data.encode()) <= MAX_CB_BYTES
 
 
 def test_menu_kb_no_admin_button_for_non_admin():
-    kb = build_menu_kb([], is_admin=False)
+    kb = build_menu_kb(is_admin=False)
     cbs = {b.callback_data for r in kb.inline_keyboard for b in r}
     assert "adm:menu" not in cbs
-    assert "vj:check" not in cbs  # no channels → no verify row
-    assert "back:menu" in cbs
+    assert "vj:check" not in cbs  # join/verify only on the force-join gate
+    assert "back:menu" not in cbs  # root menu has nowhere to go back to
+    # ends on a plain 2-up tool row
+    assert len(kb.inline_keyboard[-1]) == 2
 
 
 def test_force_join_kb_tail_is_verify():

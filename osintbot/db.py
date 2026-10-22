@@ -17,6 +17,7 @@ __all__ = [
     "init_db",
     "get_conn",
     "upsert_user",
+    "count_users",
     "get_user",
     "add_channel",
     "get_channel",
@@ -98,7 +99,10 @@ async def upsert_user(
     user_id: int,
     username: str | None = None,
     full_name: str | None = None,
-) -> None:
+) -> bool:
+    """Insert/update a user; returns True when the row is brand-new (L8)."""
+    cur = await conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+    is_new = await cur.fetchone() is None
     now = _now()
     await conn.execute(
         """
@@ -112,6 +116,13 @@ async def upsert_user(
         (user_id, username, full_name, now, now),
     )
     await conn.commit()
+    return is_new
+
+
+async def count_users(conn: aiosqlite.Connection) -> int:
+    cur = await conn.execute("SELECT COUNT(*) AS n FROM users")
+    row = await cur.fetchone()
+    return int(row["n"] if isinstance(row, sqlite3.Row) else row[0])
 
 
 async def get_user(conn: aiosqlite.Connection, user_id: int) -> dict | None:

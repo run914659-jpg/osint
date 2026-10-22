@@ -30,12 +30,14 @@ error is logged. All cancellations below use that pattern.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from osintbot.db import get_pending_channels, upsert_user
+from osintbot import texts
+from osintbot.db import count_users, get_pending_channels, upsert_user
 
 __all__ = [
     "DbMiddleware",
@@ -56,6 +58,14 @@ ADMIN_ONLY_ALERT = "⛔ Admins only"
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
 
+def _is_private(event: TelegramObject) -> bool:
+    """True only for private chats (announce scope: no group noise)."""
+    chat = getattr(event, "chat", None)
+    if chat is None:  # CallbackQuery → chat lives on .message
+        chat = getattr(getattr(event, "message", None), "chat", None)
+    return getattr(chat, "type", None) == "private"
+
+
 class DbMiddleware(BaseMiddleware):
     """Bind the single shared aiosqlite connection into handler ``data``."""
 
@@ -72,7 +82,13 @@ class UserUpsertMiddleware(BaseMiddleware):
 
     Skips bots and (defensively) chat_join_request events. Failures are
     swallowed — tracking must never break real handling.
-    """
+
+    When the row is brand-new, every admin gets a 👋 alert with the new
+    user's identity and the live total user count (L8). Admins starting
+    the bot themselves are not announced (no self-noise)."""
+
+    def __init__(self, admin_ids: set[int]) -> None:
+        self.admin_ids = set(admin_ids)
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict) -> Any:
         conn = data.get("db")
@@ -80,10 +96,28 @@ class UserUpsertMiddleware(BaseMiddleware):
             user = getattr(event, "from_user", None)
             if user is not None and not user.is_bot:
                 try:
-                    await upsert_user(conn, user.id, user.username, user.full_name)
+                    is_new = await upsert_user(
+                        conn, user.id, user.username, user.full_name
+                    )
                 except Exception:  # noqa: BLE001 - best-effort tracking
-                    pass
+                    is_new = False
+                if is_new and user.id not in self.admin_ids and _is_private(event):
+                    await self._announce(data, user, conn)
         return await handler(event, data)
+
+    async def _announce(self, data: dict, user, conn) -> None:
+        """Best-effort 👋 DM to every admin — never breaks the real handler."""
+        bot = data.get("bot")
+        if bot is None:
+            return
+        try:
+            total = await count_users(conn)
+            text = texts.NEW_USER_NOTIFY(user.full_name, user.username, user.id, total)
+        except Exception:  # noqa: BLE001 - DB/format hiccup
+            return
+        for admin_id in self.admin_ids:
+            with suppress(Exception):
+                await bot.send_message(admin_id, text, parse_mode="HTML")
 
 
 class ForceJoinGateMiddleware(BaseMiddleware):

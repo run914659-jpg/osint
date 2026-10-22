@@ -376,6 +376,48 @@ async def test_back_menu_clears_armed_tool_state(env):
     assert env.bot.session.calls == [], "no tool query must run after Back"
 
 
+# ================================================ New-user announce (L8) ====
+
+@_aio
+async def test_new_user_announces_to_admin_with_total(env):
+    """First-ever /start → admin DM with the user's identity + total count."""
+    await _reset(env)
+
+    await env.dp.feed_update(env.bot, _msg_update(20, "/start", USER_ID))
+
+    sends = env.bot.session.of(SendMessage)
+    to_admin = [m for m in sends if m.chat_id == ADMIN_ID]
+    assert to_admin, "the admin must be notified about the new user"
+    assert "New user" in to_admin[0].text
+    assert str(USER_ID) in to_admin[0].text
+    assert "Total users" in to_admin[0].text
+    assert "1" in to_admin[0].text  # this user is the first (and only) one
+
+
+@_aio
+async def test_returning_user_is_not_announced(env):
+    """Second contact is not a new user — no second admin DM."""
+    await _reset(env)
+
+    await env.dp.feed_update(env.bot, _msg_update(21, "/start", USER_ID))
+    env.bot.session.calls.clear()
+    await env.dp.feed_update(env.bot, _msg_update(22, "/start", USER_ID))
+
+    to_admin = [m for m in env.bot.session.of(SendMessage) if m.chat_id == ADMIN_ID]
+    assert to_admin == [], "returning users must not re-announce"
+
+
+@_aio
+async def test_admin_own_start_is_not_announced(env):
+    """Admins starting the bot get no self-notification."""
+    await _reset(env)
+
+    await env.dp.feed_update(env.bot, _msg_update(23, "/start", ADMIN_ID))
+
+    to_admin = [m for m in env.bot.session.of(SendMessage) if m.chat_id == ADMIN_ID]
+    assert to_admin == [], "admins must not be spammed by their own /start"
+
+
 # =========================================================== Webhook ========
 
 _UPDATE_PAYLOAD = {

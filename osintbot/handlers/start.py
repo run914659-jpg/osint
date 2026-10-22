@@ -77,21 +77,14 @@ def _channel_button(ch: dict) -> InlineKeyboardButton:
     return btn(f"{icon} {label}", disabled=True)
 
 
-def build_menu_kb(channels: list[dict], *, is_admin: bool) -> InlineKeyboardMarkup:
-    """Welcome-screen keyboard: channels + Verify + 16 tools (+ admin) + Back."""
-    rows: list[list[InlineKeyboardButton]] = []
-
-    channel_buttons = [_channel_button(ch) for ch in channels]
-    rows.extend(_chunk2(channel_buttons))
-    if channel_buttons:
-        rows.append(full(btn("✅ I Joined / Verify", cb="vj:check", style=SUCCESS)))
-
-    rows.extend(_chunk2(list(_TOOL_ITEMS)))
+def build_menu_kb(*, is_admin: bool) -> InlineKeyboardMarkup:
+    """Main-menu keyboard: tools 2-up (+ admin row). No join-channel buttons,
+    no Verify, no Back — the menu is the root screen; channel prompts live
+    only on the force-join gate screen (L8/L9)."""
+    rows: list[list[InlineKeyboardButton]] = _chunk2(list(_TOOL_ITEMS))
 
     if is_admin:
         rows.append(full(btn("🔧 Channel Manage", cb="adm:menu", style=PRIMARY)))
-
-    rows.append(full(btn("◀ Back", cb="back:menu", style=PRIMARY)))
     return make_kb(*rows)
 
 
@@ -163,9 +156,8 @@ async def _show_welcome_or_gate(event: TelegramObject, conn, config) -> None:
         text = texts.FORCE_JOIN(pending)
         kb = build_force_join_kb(pending)
     else:
-        channels = await list_channels(conn)
         text = texts.WELCOME
-        kb = build_menu_kb(channels, is_admin=user_id in config.admin_ids)
+        kb = build_menu_kb(is_admin=user_id in config.admin_ids)
     if isinstance(event, CallbackQuery):
         await edit_or_send(event, text, kb)
     else:

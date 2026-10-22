@@ -38,6 +38,7 @@ __all__ = [
     "ADMIN_NOT_FOUND",
     "ADMIN_MODE_SET",
     "BOT_ONLINE",
+    "NEW_USER_NOTIFY",
     "TOOL_PROMPT",
     "TOOL_RESULT",
     "TOOL_ERR",
@@ -53,19 +54,13 @@ def _esc(text: object) -> str:
 # ------------------------------------------------------------- welcome -----
 
 WELCOME = (
-    "<pre>"
-    "  ____ ___ ____   ___  ____  _____ _   _ _______   __\n"
-    " / ___/ _ \\_  _|  \\ \\/ /\\ \\ / /_  _| \\ | | ____\\ \\ / /\n"
-    " \\__ \\ | | || |    \\  /  \\ V /  | | |  \\| |  _|  \\ V / \n"
-    " ___) |_| || |    /  \\   | |   | | | |\\  | |___  | |  \n"
-    " |____/\\___/|_|   /_/\\_\\  |_|   |_| |_| \\_|_____| |_|  \n"
-    "</pre>"
+    "<b>𝑼𝒏𝒌𝒏𝒐𝒘𝒏 𝑶𝒔𝒊𝒏𝒕 𝑩𝒐𝒕</b>"
     "\n"
     f"<blockquote>🕵️ <b>The premium OSINT toolkit</b> — {_TOOL_COUNT} instant tools, "
     "zero noise, all inside Telegram.</blockquote>"
     "\n\n"
     "🔎 <b>What you can do here</b>\n"
-    "• 📱 phone intel  • ✉️ email checks  • 👤 username sweep\n"
+    "• 📱 Number → Info  • ✉️ email checks  • 👤 username sweep\n"
     "• 🌐 IP lookup  • 🌍 DNS/WHOIS  • 💬 Telegram info\n"
     "• 🛠 text utils  • 📡 URL analysis"
     "\n\n"
@@ -237,6 +232,16 @@ TOOL_TIMEOUT = (
 
 
 BOT_ONLINE = "🟢 <b>Bot online</b> — all systems go."
+
+
+def NEW_USER_NOTIFY(name: str, username: str | None, user_id: int, total: int) -> str:
+    """Admin alert when a brand-new user first contacts the bot (L8)."""
+    handle = f"@{_esc(username)}" if username else "—"
+    return (
+        "👋 <b>New user joined!</b>\n"
+        f"<blockquote>{_esc(name)} • {handle} • <code>{user_id}</code></blockquote>\n"
+        f"👥 Total users: <b>{total}</b>"
+    )
 
 
 ADMIN_INVALID_TARGET = (
