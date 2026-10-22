@@ -8,8 +8,9 @@ Layout rules enforced *structurally*:
 * ``menu``  → items chunked 2-up, the Back tail always its own last row.
 * ``chain`` → caller rows (2-up) + the tail forced into its own last row,
   so callers *cannot* bury Back/Verify inside a 2-up row.
-* ``btn``   → exactly one of ``cb``/``url``, callback ≤ 64 bytes,
-  style restricted to ``None``/primary/success/danger.
+* ``btn``   → exactly one of ``cb``/``url`` (or a ``copy_text`` clipboard
+  button instead), callback ≤ 64 bytes, style restricted to
+  ``None``/primary/success/danger.
 """
 
 from __future__ import annotations
@@ -19,11 +20,20 @@ import warnings
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pydantic import ValidationError
 
+try:  # CopyTextButton arrived with Bot API 7.11 (present in aiogram 3.15).
+    from aiogram.types import CopyTextButton
+except ImportError:  # pragma: no cover - only very old aiogram builds
+    CopyTextButton = None  # type: ignore[assignment]
+
+# Whether ``btn(..., copy_text=...)`` can produce a real clipboard button.
+HAS_COPY_TEXT = CopyTextButton is not None
+
 __all__ = [
     "PRIMARY",
     "SUCCESS",
     "DANGER",
     "MAX_CB_BYTES",
+    "HAS_COPY_TEXT",
     "btn",
     "row2",
     "full",
@@ -68,6 +78,7 @@ def _build_button(
     cb_data: str | None = None,
     url: str | None = None,
     style: str | None = None,
+    copy_text: object | None = None,
 ) -> InlineKeyboardButton:
     kwargs: dict = {"text": text}
     if cb_data is not None:
@@ -76,6 +87,8 @@ def _build_button(
         kwargs["url"] = url
     if style is not None:
         kwargs["style"] = style
+    if copy_text is not None:
+        kwargs["copy_text"] = copy_text
     try:
         button = InlineKeyboardButton(**kwargs)
     except (TypeError, ValidationError):
@@ -98,11 +111,14 @@ def btn(
     url: str | None = None,
     style: str | None = None,
     disabled: bool = False,
+    copy_text: str | None = None,
 ) -> InlineKeyboardButton:
     """Build one inline button.
 
-    Exactly one of ``cb``/``url`` must be given. ``disabled=True`` renders
-    an inert ``noop`` callback button (aiogram has no ``disabled`` field).
+    Exactly one of ``cb``/``url`` must be given — unless ``copy_text`` is
+    given instead (clipboard button, aiogram ≥ Bot API 7.11; mutually
+    exclusive with ``cb``/``url``). ``disabled=True`` renders an inert
+    ``noop`` callback button (aiogram has no ``disabled`` field).
     ``style`` must be one of :data:`PRIMARY`/:data:`SUCCESS`/:data:`DANGER`.
     The callback (UTF-8) must fit Telegram's 64-byte limit.
     """
@@ -110,7 +126,16 @@ def btn(
         # No disabled field in Bot API → inert noop callback instead.
         cb, url = "noop", None
 
-    assert (cb is None) != (url is None), "btn(): provide exactly one of cb/url"
+    if copy_text is not None:
+        assert cb is None and url is None, (
+            "btn(): copy_text buttons must not also set cb/url"
+        )
+        assert HAS_COPY_TEXT, (
+            "btn(): copy_text unsupported by this aiogram version"
+        )
+    else:
+        assert (cb is None) != (url is None), "btn(): provide exactly one of cb/url"
+
     assert style in STYLES, f"btn(): invalid style {style!r}; allowed: {sorted(s for s in STYLES if s)}"
 
     if cb is not None:
@@ -126,6 +151,10 @@ def btn(
             stacklevel=2,
         )
 
+    if copy_text is not None:
+        return _build_button(
+            text, copy_text=CopyTextButton(text=str(copy_text)), style=style
+        )
     return _build_button(text, cb_data=cb, url=url, style=style)
 
 

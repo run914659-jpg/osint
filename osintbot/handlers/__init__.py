@@ -12,11 +12,13 @@ from aiogram import Router
 from osintbot.handlers.admin import router as admin_router
 from osintbot.handlers.joinrequests import router as joinrequests_router
 from osintbot.handlers.start import router as start_router
+from osintbot.handlers.tools import tools_router
 
 __all__ = [
     "start_router",
     "admin_router",
     "joinrequests_router",
+    "tools_router",
     "all_routers",
 ]
 
@@ -27,5 +29,6 @@ def all_routers() -> list[Router]:
         start_router,
         admin_router,
         joinrequests_router,
-        # WAVE3: tools_router  <-- t:<code> tool handlers plug in here
+        # WAVE3: tools_router — t:<code> → FSM prompt → loader → lookup/render
+        tools_router,
     ]
