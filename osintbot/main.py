@@ -113,16 +113,42 @@ def create_web_app(
     return app
 
 
+async def _register_webhook(bot: Bot, url: str, secret: str) -> None:
+    """Register the Telegram webhook, retrying with backoff until success.
+
+    Kept out of the server-startup path so a slow or failing Telegram API
+    call can never block the port bind — Render health-checks the port
+    immediately and would otherwise kill the deploy as "no open ports".
+    """
+    delay = 3.0
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await bot.set_webhook(
+                url=url,
+                secret_token=secret,
+                allowed_updates=ALLOWED_UPDATES,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - any API/network error → retry
+            logger.exception(
+                "set_webhook attempt %d failed; retrying in %.0fs", attempt, delay
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)
+            continue
+        logger.info("Webhook registered (attempt %d): %s", attempt, url)
+        return
+
+
 async def _run_webhook(cfg: Config, bot: Bot, dp: Dispatcher) -> None:
     path = _normalize_path(cfg.webhook_path)
     url = f"{cfg.public_base_url}{path}"
-    await bot.set_webhook(
-        url=url,
-        secret_token=cfg.webhook_secret,
-        allowed_updates=ALLOWED_UPDATES,
-    )
-    logger.info("Webhook registered: %s", url)
 
+    # Bind the HTTP server FIRST: /health must answer immediately so the
+    # platform's deploy watchdog sees an open port (Render port-scan window).
     app = create_web_app(cfg, bot, dp, path=path)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -130,10 +156,14 @@ async def _run_webhook(cfg: Config, bot: Bot, dp: Dispatcher) -> None:
     await site.start()
     logger.info("Listening on 0.0.0.0:%d", cfg.port)
 
+    reg_task = asyncio.create_task(_register_webhook(bot, url, cfg.webhook_secret))
     await notify_admins(bot, cfg)
     try:
         await asyncio.Event().wait()  # run until cancelled
     finally:
+        reg_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await reg_task
         await runner.cleanup()
 
 
@@ -152,6 +182,9 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     cfg = Config.from_env()
+    logger.info(
+        "osintbot booting: run_mode=%s port=%d", cfg.run_mode, cfg.port, exc_info=False
+    )
     await init_db(cfg.db_path)
     conn = await get_conn(cfg.db_path)
     bot = Bot(cfg.bot_token)
